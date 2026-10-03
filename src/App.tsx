@@ -57,7 +57,6 @@ async function syncToCloud(stateToSync: any) {
 }
 
 export default function App() {
-  // Sử dụng kiểu any để tránh hoàn toàn lỗi type mismatch
   const [appState, setAppState] = useState<any>(() => {
     try {
       return loadAppState() || {};

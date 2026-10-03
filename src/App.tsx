@@ -5,34 +5,15 @@ import { WeeklyScoreTable } from './components/WeeklyScoreTable';
 import { MorningDutyView } from './components/MorningDutyView';
 import { AfternoonSessionView } from './components/AfternoonSessionView';
 import { ReportStatsView } from './components/ReportStatsView';
-import { QuickEntryModal } from './components/QuickEntryModal';
-import { ClassRosterModal } from './components/ClassRosterModal';
-import { PrintReportView } from './components/PrintReportView';
-import { ImportStudentsModal } from './components/ImportStudentsModal';
-import { RoleSwitcher } from './components/RoleSwitcher';
-import { RoleRemarksModal } from './components/RoleRemarksModal';
 import { ClassSettingsModal } from './components/ClassSettingsModal';
 import { AuthModal } from './components/AuthModal';
 import { AccountManagerModal } from './components/AccountManagerModal';
 
-import type {
-  Student,
-  StudentWeeklyRecord,
-  MorningDutyRecord,
-  AfternoonRecord,
-  WeekInfo,
-  ClassMetadata,
-  UserRoleType,
-  WeeklyRemarksStore,
-  UserAccount,
-} from './types/discipline';
 import {
   loadAppState,
   saveAppState,
-  resetToInitialData,
   type AppState,
 } from './utils/storage';
-import { calculateGroupSummaries } from './utils/scoring';
 
 // ============================================================================
 // CẤU HÌNH ĐỒNG BỘ ĐÁM MÂY FIREBASE (PROJECT: trang-9618d)
@@ -81,7 +62,7 @@ async function syncToCloud(stateToSync: AppState) {
       body: JSON.stringify(payload),
     });
   } catch (err) {
-    console.error('Lỗi lưu đám mây Firebase (trang-90cbb):', err);
+    console.error('Lỗi lưu đám mây Firebase:', err);
   }
 }
 
@@ -158,7 +139,7 @@ export default function App() {
         )}
         {currentView === 'afternoon_session' && (
           <AfternoonSessionView
-            records={appState.afternoonRecords}
+            records={appstate_afternoonRecords_fix(appState)}
             students={appState.students}
           />
         )}
@@ -195,4 +176,9 @@ export default function App() {
       )}
     </div>
   );
+}
+
+// Hàm bổ trợ nhỏ tránh lỗi thiếu thuộc tính nếu state chưa định nghĩa đúng tên
+function appstate_afternoonRecords_fix(state: AppState) {
+  return (state as any).afternoonRecords || [];
 }

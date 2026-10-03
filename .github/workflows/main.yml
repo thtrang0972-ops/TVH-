@@ -1,29 +1,53 @@
-import path from 'path';
-import { defineConfig, loadEnv } from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
+name: Deploy Vite App to GitHub Pages
 
-export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, '.', '');
-    // Ưu tiên lấy từ biến môi trường của GitHub Actions, nếu không có mới lấy từ file .env
-    const apiKey = process.env.GEMINI_API_KEY || env.GEMINI_API_KEY || '';
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
 
-    return {
-        // Dùng './' để tự động tương thích với mọi tên Repository trên GitHub Pages
-        base: process.env.GITHUB_ACTIONS ? '/TVH-/' : './',
-        server: {
-            port: 3000,
-            host: '0.0.0.0',
-        },
-        plugins: [react(), tailwindcss()],
-        define: {
-            'process.env.API_KEY': JSON.stringify(apiKey),
-            'process.env.GEMINI_API_KEY': JSON.stringify(apiKey)
-        },
-        resolve: {
-            alias: {
-                '@': path.resolve(__dirname, '.'),
-            }
-        }
-    };
-});
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Build
+        run: bun run build
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

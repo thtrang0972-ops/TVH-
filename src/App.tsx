@@ -1,4 +1,20 @@
+// src/App.tsx
 import React, { useState, useEffect } from 'react';
+import { 
+  collection, 
+  onSnapshot, 
+  addDoc, 
+  updateDoc, 
+  doc, 
+  arrayUnion, 
+  increment,
+  serverTimestamp,
+  orderBy,
+  query
+} from 'firebase/firestore';
+import { db } from './firebase'; // Import Firestore database
+
+// Import components (Giữ nguyên như cũ)
 import { Navbar } from './components/Navbar';
 import { HeroSection } from './components/HeroSection';
 import { ConfessionSection } from './components/ConfessionSection';
@@ -12,7 +28,23 @@ import { FloatingSOSButton } from './components/FloatingSOSButton';
 import { Footer } from './components/Footer';
 
 import { Confession, WishItem, HopeNote, SOSAlert } from './types';
-import { INITIAL_CONFESSIONS, INITIAL_WISHES, INITIAL_HOPE_NOTES, DEFAULT_SCHOOL_SETTINGS } from './data/mockData';
+import { DEFAULT_SCHOOL_SETTINGS } from './data/mockData';
+
+// Hook hỗ trợ lưu trữ trạng thái Like/Reaction ở thiết bị người dùng (vì chưa có Auth)
+const useLocalInteractions = (key: string) => {
+  const [interactions, setInteractions] = useState<Record<string, any>>(() => {
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : {};
+  });
+
+  const saveInteraction = (id: string, data: any) => {
+    const newInteractions = { ...interactions, [id]: data };
+    setInteractions(newInteractions);
+    localStorage.setItem(key, JSON.stringify(newInteractions));
+  };
+
+  return { interactions, saveInteraction };
+};
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'confessions' | 'wishbox' | 'wall_of_hope' | 'counseling'>('confessions');
@@ -22,237 +54,168 @@ export default function App() {
   const [isWriteConfessionOpen, setIsWriteConfessionOpen] = useState(false);
   const [isLookupModalOpen, setIsLookupModalOpen] = useState(false);
 
-  // Locked School Settings (School name & Counselors are fixed presets as requested)
   const schoolSettings = DEFAULT_SCHOOL_SETTINGS;
 
-  // Confessions state with LocalStorage persistence
-  const [confessions, setConfessions] = useState<Confession[]>(() => {
-    try {
-      const saved = localStorage.getItem('tram_lang_nghe_confessions');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // Fallback
-    }
-    return INITIAL_CONFESSIONS;
-  });
+  // Firebase Data States
+  const [confessions, setConfessions] = useState<Confession[]>([]);
+  const [wishes, setWishes] = useState<WishItem[]>([]);
+  const [hopeNotes, setHopeNotes] = useState<HopeNote[]>([]);
+  
+  // Local interaction states (để người dùng thấy họ đã bấm like/hug chưa)
+  const { interactions: localReactions, saveInteraction: setLocalReaction } = useLocalInteractions('local_reactions');
+  const { interactions: localUpvotes, saveInteraction: setLocalUpvote } = useLocalInteractions('local_upvotes');
+  const { interactions: localLikes, saveInteraction: setLocalLike } = useLocalInteractions('local_likes');
 
-  // Wishes state with LocalStorage persistence
-  const [wishes, setWishes] = useState<WishItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('tram_lang_nghe_wishes');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // Fallback
-    }
-    return INITIAL_WISHES;
-  });
-
-  // Hope Notes state with LocalStorage persistence
-  const [hopeNotes, setHopeNotes] = useState<HopeNote[]>(() => {
-    try {
-      const saved = localStorage.getItem('tram_lang_nghe_hope_notes');
-      if (saved) return JSON.parse(saved);
-    } catch {
-      // Fallback
-    }
-    return INITIAL_HOPE_NOTES;
-  });
-
-  // SOS alerts list (stored in memory/session for school counselor demonstration)
-  const [, setSosAlerts] = useState<SOSAlert[]>([]);
-
-  // Persist confessions
+  // Lắng nghe dữ liệu Realtime từ Firebase
   useEffect(() => {
-    try {
-      localStorage.setItem('tram_lang_nghe_confessions', JSON.stringify(confessions));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [confessions]);
+    // 1. Confessions
+    const qConfessions = query(collection(db, 'confessions'), orderBy('createdAt', 'desc'));
+    const unsubConfessions = onSnapshot(qConfessions, (snapshot) => {
+      const confData = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id,
+        // Gắn thêm trạng thái reaction local vào dữ liệu trả về cho UI
+        userReactions: localReactions[doc.id] || {}
+      })) as Confession[];
+      setConfessions(confData);
+    });
 
-  // Persist wishes
-  useEffect(() => {
-    try {
-      localStorage.setItem('tram_lang_nghe_wishes', JSON.stringify(wishes));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [wishes]);
+    // 2. Wishes
+    const qWishes = query(collection(db, 'wishes'), orderBy('createdAt', 'desc'));
+    const unsubWishes = onSnapshot(qWishes, (snapshot) => {
+      const wishData = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id,
+        hasUpvoted: !!localUpvotes[doc.id]
+      })) as WishItem[];
+      setWishes(wishData);
+    });
 
-  // Persist hope notes
-  useEffect(() => {
-    try {
-      localStorage.setItem('tram_lang_nghe_hope_notes', JSON.stringify(hopeNotes));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [hopeNotes]);
+    // 3. Hope Notes
+    const qNotes = query(collection(db, 'hope_notes'), orderBy('createdAt', 'desc'));
+    const unsubNotes = onSnapshot(qNotes, (snapshot) => {
+      const notesData = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id,
+        hasLiked: !!localLikes[doc.id]
+      })) as HopeNote[];
+      setHopeNotes(notesData);
+    });
 
-  // Handle Confession Reactions
-  const handleAddReaction = (
-    confessionId: string,
-    reactionType: 'hug' | 'sympathy' | 'cheer' | 'sparkle'
-  ) => {
-    setConfessions((prev) =>
-      prev.map((c) => {
-        if (c.id !== confessionId) return c;
-        const currentActive = c.userReactions[reactionType];
-        const newActive = !currentActive;
-        const diff = newActive ? 1 : -1;
+    // Cleanup listeners khi component unmount
+    return () => {
+      unsubConfessions();
+      unsubWishes();
+      unsubNotes();
+    };
+  }, [localReactions, localUpvotes, localLikes]);
 
-        return {
-          ...c,
-          reactions: {
-            ...c.reactions,
-            [reactionType]: Math.max(0, c.reactions[reactionType] + diff),
-          },
-          userReactions: {
-            ...c.userReactions,
-            [reactionType]: newActive,
-          },
-        };
-      })
-    );
+  // --- CÁC HÀM XỬ LÝ GHI DỮ LIỆU LÊN FIREBASE ---
+
+  const handleAddReaction = async (confessionId: string, reactionType: 'hug' | 'sympathy' | 'cheer' | 'sparkle') => {
+    const currentReactions = localReactions[confessionId] || {};
+    const hasReacted = currentReactions[reactionType];
+    const diff = hasReacted ? -1 : 1; // Nếu đã react thì trừ 1, chưa thì cộng 1
+
+    // Cập nhật Local
+    setLocalReaction(confessionId, { ...currentReactions, [reactionType]: !hasReacted });
+
+    // Cập nhật Firebase
+    const confRef = doc(db, 'confessions', confessionId);
+    await updateDoc(confRef, {
+      [`reactions.${reactionType}`]: increment(diff)
+    });
   };
 
-  // Handle Confession Comments
-  const handleAddComment = (
-    confessionId: string,
-    commentText: string,
-    authorNickname = 'Bạn học quan tâm'
-  ) => {
-    setConfessions((prev) =>
-      prev.map((c) => {
-        if (c.id !== confessionId) return c;
-        const newComment = {
-          id: `comment-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-          authorNickname,
-          content: commentText,
-          createdAt: 'Vừa xong',
-        };
-        return {
-          ...c,
-          comments: [...c.comments, newComment],
-        };
-      })
-    );
+  const handleAddComment = async (confessionId: string, commentText: string, authorNickname = 'Bạn học quan tâm') => {
+    const newComment = {
+      id: `comment-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      authorNickname,
+      content: commentText,
+      createdAt: new Date().toISOString(), // Dùng ISO string để dễ format
+    };
+
+    const confRef = doc(db, 'confessions', confessionId);
+    await updateDoc(confRef, {
+      comments: arrayUnion(newComment) // Thêm comment vào mảng comments
+    });
   };
 
-  // Handle Creating Confession
-  const handleCreateConfession = (
-    newConf: Omit<Confession, 'id' | 'createdAt' | 'reactions' | 'userReactions' | 'comments'>
-  ) => {
-    const id = `conf-${Date.now()}`;
+  const handleCreateConfession = async (newConf: Omit<Confession, 'id' | 'createdAt' | 'reactions' | 'userReactions' | 'comments'>) => {
     const trackingCode = newConf.isPrivateToCounselor
       ? `TL-${Math.floor(1000 + Math.random() * 9000)}`
       : undefined;
 
-    const confessionItem: Confession = {
+    await addDoc(collection(db, 'confessions'), {
       ...newConf,
-      id,
-      createdAt: 'Vừa gửi',
       trackingCode,
+      createdAt: serverTimestamp(),
       reactions: { hug: 0, sympathy: 0, cheer: 0, sparkle: 0 },
-      userReactions: {},
       comments: [],
-    };
-
-    setConfessions((prev) => [confessionItem, ...prev]);
+    });
 
     return { trackingCode };
   };
 
-  // Handle Upvoting Wish
-  const handleUpvoteWish = (wishId: string) => {
-    setWishes((prev) =>
-      prev.map((w) => {
-        if (w.id !== wishId) return w;
-        const hasVoted = w.hasUpvoted;
-        return {
-          ...w,
-          upvotes: hasVoted ? w.upvotes - 1 : w.upvotes + 1,
-          hasUpvoted: !hasVoted,
-        };
-      })
-    );
+  const handleUpvoteWish = async (wishId: string) => {
+    const hasUpvoted = !!localUpvotes[wishId];
+    const diff = hasUpvoted ? -1 : 1;
+
+    setLocalUpvote(wishId, !hasUpvoted);
+
+    const wishRef = doc(db, 'wishes', wishId);
+    await updateDoc(wishRef, {
+      upvotes: increment(diff)
+    });
   };
 
-  // Handle Creating Wish
-  const handleCreateWish = (
-    newWish: Omit<WishItem, 'id' | 'createdAt' | 'upvotes' | 'hasUpvoted' | 'status' | 'schoolReply'>
-  ) => {
-    const wishItem: WishItem = {
+  const handleCreateWish = async (newWish: Omit<WishItem, 'id' | 'createdAt' | 'upvotes' | 'hasUpvoted' | 'status' | 'schoolReply'>) => {
+    await addDoc(collection(db, 'wishes'), {
       ...newWish,
-      id: `wish-${Date.now()}`,
-      createdAt: 'Hôm nay',
+      createdAt: serverTimestamp(),
       upvotes: 1,
-      hasUpvoted: true,
       status: 'received',
       schoolReply: {
         authorRole: 'Ban Thư Ký Nhà Trường',
-        content: 'Đã tiếp nhận ý kiến đóng góp của em và đưa vào danh sách tổng hợp gửi Ban Giám Hiệu trong phiên họp giao ban tuần này.',
-        date: 'Vừa tiếp nhận',
+        content: 'Đã tiếp nhận ý kiến đóng góp của em và đưa vào danh sách tổng hợp gửi Ban Giám Hiệu.',
+        date: new Date().toISOString(),
       },
-    };
-
-    setWishes((prev) => [wishItem, ...prev]);
+    });
   };
 
-  // Handle Liking Hope Note
-  const handleLikeHopeNote = (noteId: string) => {
-    setHopeNotes((prev) =>
-      prev.map((n) => {
-        if (n.id !== noteId) return n;
-        const hasLiked = n.hasLiked;
-        return {
-          ...n,
-          likes: hasLiked ? n.likes - 1 : n.likes + 1,
-          hasLiked: !hasLiked,
-        };
-      })
-    );
+  const handleLikeHopeNote = async (noteId: string) => {
+    const hasLiked = !!localLikes[noteId];
+    const diff = hasLiked ? -1 : 1;
+
+    setLocalLike(noteId, !hasLiked);
+
+    const noteRef = doc(db, 'hope_notes', noteId);
+    await updateDoc(noteRef, {
+      likes: increment(diff)
+    });
   };
 
-  // Handle Creating Hope Note
-  const handleCreateHopeNote = (
-    newNote: Omit<HopeNote, 'id' | 'likes' | 'hasLiked' | 'createdAt'>
-  ) => {
-    const noteItem: HopeNote = {
+  const handleCreateHopeNote = async (newNote: Omit<HopeNote, 'id' | 'likes' | 'hasLiked' | 'createdAt'>) => {
+    await addDoc(collection(db, 'hope_notes'), {
       ...newNote,
-      id: `hope-${Date.now()}`,
       likes: 1,
-      hasLiked: true,
-      createdAt: 'Vừa dán',
-    };
-
-    setHopeNotes((prev) => [noteItem, ...prev]);
+      createdAt: serverTimestamp(),
+    });
   };
 
-  // Handle Sending SOS Alert
-  const handleSubmitSOS = (alertData: Omit<SOSAlert, 'id' | 'timestamp' | 'status'>) => {
-    const alertItem: SOSAlert = {
+  const handleSubmitSOS = async (alertData: Omit<SOSAlert, 'id' | 'timestamp' | 'status'>) => {
+    await addDoc(collection(db, 'sos_alerts'), {
       ...alertData,
-      id: `sos-${Date.now()}`,
-      timestamp: new Date().toLocaleTimeString('vi-VN'),
+      timestamp: serverTimestamp(),
       status: 'pending',
-    };
-
-    setSosAlerts((prev) => [alertItem, ...prev]);
+    });
   };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-800 antialiased selection:bg-rose-100 selection:text-rose-900">
-      {/* Strict Top Bar */}
-      <Navbar
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        onOpenSOS={() => setIsSOSOpen(true)}
-        schoolName={schoolSettings.schoolName}
-      />
+      <Navbar activeTab={activeTab} setActiveTab={setActiveTab} onOpenSOS={() => setIsSOSOpen(true)} schoolName={schoolSettings.schoolName} />
 
-      {/* Main Container */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 grow w-full">
-        {/* Welcoming Hero & Pillar Overview */}
         <HeroSection
           activeTab={activeTab}
           setActiveTab={setActiveTab}
@@ -261,7 +224,6 @@ export default function App() {
           schoolSettings={schoolSettings}
         />
 
-        {/* Dynamic Section Display */}
         {activeTab === 'confessions' && (
           <ConfessionSection
             confessions={confessions}
@@ -297,10 +259,8 @@ export default function App() {
         )}
       </main>
 
-      {/* Persistent Floating Emergency SOS Button */}
       <FloatingSOSButton onOpenSOS={() => setIsSOSOpen(true)} />
 
-      {/* Emergency Crisis Modal */}
       <EmergencyModal
         isOpen={isSOSOpen}
         onClose={() => setIsSOSOpen(false)}
@@ -308,27 +268,19 @@ export default function App() {
         schoolSettings={schoolSettings}
       />
 
-      {/* Write Confession Modal */}
       <ConfessionModal
         isOpen={isWriteConfessionOpen}
         onClose={() => setIsWriteConfessionOpen(false)}
         onSubmit={handleCreateConfession}
       />
 
-      {/* Counselor Private Letter Lookup Modal */}
       <CounselorLookupModal
         isOpen={isLookupModalOpen}
         onClose={() => setIsLookupModalOpen(false)}
         confessions={confessions}
       />
 
-      {/* Quiet Clean Footer */}
-      <Footer
-        onOpenSOS={() => setIsSOSOpen(true)}
-        setActiveTab={setActiveTab}
-        schoolSettings={schoolSettings}
-      />
+      <Footer onOpenSOS={() => setIsSOSOpen(true)} setActiveTab={setActiveTab} schoolSettings={schoolSettings} />
     </div>
   );
 }
-

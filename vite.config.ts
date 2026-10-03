@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
 
     return{
         // Dùng './' để tự động tương thích với mọi tên Repository trên GitHub Pages
-        base: process.env.GITHUB_ACTIONS ? '/TVHĐ/' : './',
+        base: process.env.GITHUB_ACTIONS ? '/TVH-/' : './',
         server: {
             port: 3000,
             host: '0.0.0.0',
